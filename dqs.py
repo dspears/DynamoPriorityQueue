@@ -11,6 +11,10 @@ class DqsMock():
     log.info(f'{QueueName}: Creating {QueueType} queue')
     return True
 
+  def open_queue(self, QueueName):
+    log.info(f'{QueueName}: Opening queue')
+    return True
+
   def delete_queue(self, QueueName):
     log.info(f'{QueueName}: Deleting queue')
     return True
@@ -36,6 +40,9 @@ class DqsClient():
   def create_queue(self, QueueName, QueueType):
     return self.impl.create_queue(QueueName, QueueType)
 
+  def open_queue(self, QueueName):
+    return self.impl.open_queue(QueueName)
+
   def delete_queue(self, QueueName):
     return self.impl.deleted_queue(QueueName)
 
@@ -56,6 +63,7 @@ class DqsQueue():
   def __init__(self, QueueName):
     self.QueueName = QueueName
     self.client = client()
+    self.client.open_queue(QueueName)
 
   def send_message(self, MessageBody, Priority=DEFAULT_PRIORITY):
     return self.client.send_message(self.QueueName, MessageBody, Priority)

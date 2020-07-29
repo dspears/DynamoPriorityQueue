@@ -5,11 +5,13 @@ import json
 client = dqs.client()
 
 # Queue name
-queueName='AWSBlog-shipment-demo'
-client.create_queue(
+# queueName='AWSBlog-shipment-demo'
+queueName = 'MyNewQueue2'
+
+client.open_queue(
   QueueName = queueName,
-  QueueType = 'priority'
 )
+
 # Consumer
 response = client.receive_message(
   QueueName = queueName,

@@ -13,6 +13,10 @@ log = logging.getLogger(__name__)
 DEFAULT_PRIORITY = 100
 
 dynamodb = boto3.resource('dynamodb')
+# dynamodb = boto3.resource('dynamodb', endpoint_url='http://localhost:8000')
+dynamodb_client = boto3.client('dynamodb')
+# dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000')
+
 
 @attr.s
 class SystemInfo():
@@ -59,7 +63,6 @@ class Message():
         self.set_id(self.id)
         self.system_info.priority = self.Priority
         time_priority = datetime.fromtimestamp(datetime.utcnow().timestamp()-86400*self.Priority)
-        log.info('Time priority: ', time_priority)
         self.system_info.last_updated_timestamp = time_priority.isoformat()+'Z'
 
     def set_id(self, id):
@@ -68,7 +71,7 @@ class Message():
 
 @attr.s
 class DynamoDbQueueConfig():
-    VISIBILITY_TIMEOUT_IN_mS = attr.ib(default=60000)
+    VISIBILITY_TIMEOUT_IN_S = attr.ib(default=60)
 
 
 class DynamoDbQueue():
@@ -134,6 +137,9 @@ class DynamoDbQueue():
             if status != 'READY_TO_ENQUEUE':
                 raise Exception('Message to enqueue is in wrong state')
             now = datetime.utcnow().isoformat()+'Z'
+            priority = int(message['system_info']['priority'])
+            time_priority = datetime.fromtimestamp(datetime.utcnow().timestamp()+86400*priority)
+            priority_timestamp = time_priority.isoformat()+'Z'
             try:
                 outcome = self.table.update_item(
                     Key = {
@@ -141,7 +147,7 @@ class DynamoDbQueue():
                     },
                     UpdateExpression = "ADD #sys.#v :one "
                         + "SET queued = :one, #sys.queued = :one, #sys.queue_selected = :false, "
-                        + "last_updated_timestamp = :lut, #sys.last_updated_timestamp = :lut, "
+                        + "last_updated_timestamp = :pri, #sys.last_updated_timestamp = :pri, "
                         + "#sys.queue_added_timestamp = :lut, #sys.#st = :st",
                     ConditionExpression=Attr('system_info.version').eq(version), 
                     ExpressionAttributeNames={
@@ -153,7 +159,8 @@ class DynamoDbQueue():
                         ':one': 1, 
                         ':false': False,
                         ':st': 'ENQUEUED', 
-                        ':lut': now 
+                        ':lut': now,
+                        ':pri': priority_timestamp
                     }
                 )
                 log.info('enqueue did update_item', outcome)
@@ -195,19 +202,27 @@ class DynamoDbQueue():
             log.info(f"exclusiveStartKey is: {exclusiveStartKey}")
 
             for message in queryResult['Items']:
+                # log.info(f"Message from query id {message['system_info']['id']} v: {message['system_info']['version']}")
                 if 'queue_selected' in message['system_info'] and message['system_info']['queue_selected']:
                     currentTS = int(datetime.utcnow().timestamp())
                     lastPeekTimeUTC = int(message['system_info']['peek_utc_timestamp'])
+                    diff = currentTS - lastPeekTimeUTC
+                    # log.info(f"queue_selected: message['system_info']['queue_selected'] currentTS: {currentTS} lastPeekTimeUTC: {lastPeekTimeUTC} diff {diff}")
 
-                    if currentTS - lastPeekTimeUTC > self.config.VISIBILITY_TIMEOUT_IN_mS:
+                    if currentTS - lastPeekTimeUTC > self.config.VISIBILITY_TIMEOUT_IN_S:
+                        selectedID = message['system_info']['id']
                         selectedVersion = message['system_info']['version']
                         # Converted straggler.
                         recordForPeekIsFound = True
+                        log.info(f"Converted straggler version: {selectedVersion}")
+                        break
                 
                 else:
                     selectedID = message['system_info']['id']
                     selectedVersion = message['system_info']['version']
                     recordForPeekIsFound = True
+                    log.info(f"Selected message id: {selectedID} version: {selectedVersion}")
+                    break
 			
             # We're done if we found a message to peek at, or no more pages of messages:
             done = recordForPeekIsFound == True or exclusiveStartKey == {}
@@ -217,7 +232,7 @@ class DynamoDbQueue():
             log.info("Queue is empty")
             return None
         
-        log.info(f"MESSAGE ID TO PEEK: {selectedID}")
+        log.info(f"MESSAGE ID TO PEEK: {selectedID}.  SELECTED VERSION: {selectedVersion}")
 
         message = self.get(selectedID)
         id = message['id']
@@ -253,7 +268,9 @@ class DynamoDbQueue():
         # except ConditionalCheckFailedException as e:
         #     log.info('Peek blocked by optimistic locking version number.')
         except Exception as e:
-            log.warning('Enqueue update failed.  Exception:', e)
+            log.info('Peek blocked by optimistic locking version number.')
+            receivedMessage = 'retry'
+            # log.warning('Peek update failed.  Exception:', e)
         return receivedMessage
 
 
@@ -282,6 +299,72 @@ class DynamoDbQueue():
         return datetime.utcnow().isoformat()+'Z'
     
 
+class DynamoDbTableCreator():
+
+    @staticmethod
+    def tableExists(tableName):
+        try:
+            result = dynamodb_client.describe_table(TableName=tableName)
+            return True
+        except:
+            return False
+
+    @staticmethod
+    def createTable(tableName):
+        try:
+            result = dynamodb_client.create_table(
+                TableName=tableName,
+                AttributeDefinitions=[
+                    {
+                        'AttributeName': 'id',
+                        'AttributeType': 'S'
+                    },
+                    {
+                        'AttributeName': 'last_updated_timestamp',
+                        'AttributeType': 'S'
+                    },
+                    {
+                        'AttributeName': 'queued',
+                        'AttributeType': 'N'
+                    },
+                ],
+                KeySchema=[
+                    {
+                        'AttributeName': 'id',
+                        'KeyType': 'HASH'
+                    },
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'queueud-last_updated_timestamp-index',
+                        'KeySchema': [
+                            {
+                                'AttributeName': 'queued',
+                                'KeyType': 'HASH'
+                            },
+                            {
+                                'AttributeName': 'last_updated_timestamp',
+                                'KeyType': 'RANGE'
+                            },
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL',
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 100,
+                            'WriteCapacityUnits': 100
+                        }
+                    },
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 100,
+                    'WriteCapacityUnits': 100
+                },
+            )
+            log.info(f"Created table {tableName}", result)
+        except Exception as e:
+            log.error(f"Could not create DynamoDB table {tableName}", e)
+        return result
 
 class DynamoDbImpl():
 
@@ -289,13 +372,18 @@ class DynamoDbImpl():
         self.dynamoDbQueues = {}
 
     def create_queue(self, QueueName, QueueType='priority'):
-        # Create new Table to represent this queue
+        # Create new Table (if necessary) to represent this queue
+        if not DynamoDbTableCreator.tableExists(QueueName):
+            log.info(f'Creating new table for queue {QueueName}')
+            DynamoDbTableCreator.createTable(QueueName)
         log.info(f'{QueueName}: Creating {QueueType} queue')
         self.dynamoDbQueues[QueueName] = DynamoDbQueue(QueueName)
         return True
 
     def open_queue(self, QueueName, QueueType='priority'):
-        # Create new Table to represent this queue
+        # See if Table exists for this queue
+        if not DynamoDbTableCreator.tableExists(QueueName):
+            raise Exception(f'DynamoDB table does not exist for queue {QueueName}')
         log.info(f'{QueueName}: Opening {QueueType} queue')
         self.dynamoDbQueues[QueueName] = DynamoDbQueue(QueueName)
         return True
@@ -330,6 +418,8 @@ class DynamoDbImpl():
         if QueueName in self.dynamoDbQueues:
             # TODO: Add support for receiving in batches
             message = self.dynamoDbQueues[QueueName].peek()
+            while message == 'retry':
+                message = self.dynamoDbQueues[QueueName].peek()
             if message:
                 result = [message]
         return result
