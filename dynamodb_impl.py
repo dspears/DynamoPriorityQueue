@@ -7,15 +7,19 @@ import attr
 import json
 import logging
 import logconfig
+import os
+from time import sleep
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PRIORITY = 100
 
-dynamodb = boto3.resource('dynamodb')
-# dynamodb = boto3.resource('dynamodb', endpoint_url='http://localhost:8000')
-dynamodb_client = boto3.client('dynamodb')
-# dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000')
+if  os.environ['AWS_LOCAL'] == 'YES':
+    dynamodb = boto3.resource('dynamodb', endpoint_url='http://localhost:8000')
+    dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000')
+else:
+    dynamodb = boto3.resource('dynamodb')
+    dynamodb_client = boto3.client('dynamodb')
 
 
 @attr.s
@@ -285,15 +289,23 @@ class DynamoDbQueue():
         return result
 
     def remove(self, id):
-        message = self.get(id)
-        if message:
-            return
+        try:
+            response = self.table.delete_item(
+                Key = {
+                    'id': id
+                }
+            )
+        except:
+            pass
 
     def sendToDLQ(self):
         pass
 
     def deleteQueue(self):
-        pass
+        try:
+            response = self.table.delete()
+        except:
+            pass
 
     def now(self):
         return datetime.utcnow().isoformat()+'Z'
@@ -361,6 +373,9 @@ class DynamoDbTableCreator():
                     'WriteCapacityUnits': 100
                 },
             )
+            log.info(f"Creating table {tableName}...")
+            # Wait for aws to create the table
+            sleep(60)
             log.info(f"Created table {tableName}", result)
         except Exception as e:
             log.error(f"Could not create DynamoDB table {tableName}", e)
@@ -391,9 +406,8 @@ class DynamoDbImpl():
     def delete_queue(self, QueueName):
         # Delete Table associated with this queue
         log.info(f'{QueueName}: Deleting queue')
-        if QueueName in self.dynamoDbQueues:
-            self.dynamoDbQueues[QueueName].deleteQueue()
-            self.dynamoDbQueues.pop(QueueName)
+        queue = DynamoDbQueue(QueueName)
+        queue.deleteQueue()
         return True
 
     def send_message(self, QueueName, MessageBody, Priority=DEFAULT_PRIORITY):

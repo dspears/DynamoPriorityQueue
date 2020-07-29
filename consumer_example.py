@@ -29,3 +29,10 @@ while True:
     print(f'Processing message {messageCount}...')
     # simulate some message processing time
     sleep(0.100)
+    id = response[0]['id']
+    receiptHandle = response[0]['ReceiptHandle']
+    print(f'Deleteing message {id}')
+    client.delete_message(
+      QueueName = queueName,
+      ReceiptHandle = receiptHandle
+    )

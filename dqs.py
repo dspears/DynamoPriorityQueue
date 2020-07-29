@@ -44,7 +44,7 @@ class DqsClient():
     return self.impl.open_queue(QueueName)
 
   def delete_queue(self, QueueName):
-    return self.impl.deleted_queue(QueueName)
+    return self.impl.delete_queue(QueueName)
 
   def send_message(self, QueueName, MessageBody, Priority=DEFAULT_PRIORITY):
     return self.impl.send_message(QueueName=QueueName, MessageBody=MessageBody, Priority=Priority)
