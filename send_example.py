@@ -1,5 +1,9 @@
 import dqs  # i.e. Daupler DynamoDB Queue Service
 import json
+import logging
+import logconfig
+
+log = logging.getLogger(__name__)
 
 # Create a client
 
@@ -7,7 +11,7 @@ client = dqs.client()
 
 # Queue creation
 # queueName='AWSBlog-shipment-demo'
-queueName = 'MyNewQueue2'
+queueName = 'MyNewQueue5'
 
 client.create_queue(
   QueueName = queueName,
@@ -26,7 +30,7 @@ response = client.send_message(
   Priority = 100
 )
 
-print(f"Response from send_message is {response}")
+log.info(f"Response from send_message is {response}")
 
 response = client.send_message(
   QueueName = queueName,
@@ -34,7 +38,7 @@ response = client.send_message(
   Priority = 10
 )
 
-print(f"Response from send_message is {response}")
+log.info(f"Response from send_message is {response}")
 
 response = client.send_message(
   QueueName = queueName,
@@ -42,4 +46,14 @@ response = client.send_message(
   Priority = 50
 )
 
-print(f"Response from send_message is {response}")
+sentMsgCount = 3
+
+for i in range(20):
+  response = client.send_message(
+    QueueName = queueName,
+    MessageBody = json.dumps(myMessage3),
+    Priority = 50
+  )
+  sentMsgCount += 1
+  log.info(f"Sent msg count: {sentMsgCount}")
+

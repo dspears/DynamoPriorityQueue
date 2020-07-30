@@ -1,0 +1,23 @@
+version: '3.7'
+services:
+  worker-node:
+    build:
+      context: .
+      dockerfile: ./docker/development/python/Dockerfile
+    volumes:
+      - ./:/daupler
+    depends_on:
+      - "dynamodb-local"
+    links:
+      - "dynamodb-local"
+    environment:
+      - AWS_LOCAL=YES
+      - DYNAMODB_LOCAL_ENDPOINT=http://dynamodb-local:8000
+      - AWS_ACCESS_KEY_ID='DUMMYIDEXAMPLE'
+      - AWS_SECRET_ACCESS_KEY='DUMMYEXAMPLEKEY'
+      - REGION='eu-west-1'
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"

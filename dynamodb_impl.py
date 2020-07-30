@@ -14,9 +14,11 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PRIORITY = 100
 
-if  os.environ['AWS_LOCAL'] == 'YES':
-    dynamodb = boto3.resource('dynamodb', endpoint_url='http://localhost:8000')
-    dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000')
+if  'AWS_LOCAL' in os.environ:
+    DYNAMODB_ENDPOINT = os.environ['DYNAMODB_LOCAL_ENDPOINT']
+    log.info(f"Using local endpoint {DYNAMODB_ENDPOINT}")
+    dynamodb = boto3.resource('dynamodb', endpoint_url=DYNAMODB_ENDPOINT, region_name='us-east-1')
+    dynamodb_client = boto3.client('dynamodb', endpoint_url=DYNAMODB_ENDPOINT, region_name='us-east-1')
 else:
     dynamodb = boto3.resource('dynamodb')
     dynamodb_client = boto3.client('dynamodb')
@@ -28,12 +30,12 @@ class SystemInfo():
     queued = attr.ib(default=0)
     version = attr.ib(default=1)
     status = attr.ib(default='READY_TO_ENQUEUE')
-    queue_add_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
-    queue_peek_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
-    queue_remove_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
-    dlq_add_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
-    creation_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
-    last_updated_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
+    queue_add_timestamp = attr.ib(default='0')
+    queue_peek_timestamp = attr.ib(default='0')
+    queue_remove_timestamp = attr.ib(default='0')
+    dlq_add_timestamp = attr.ib(default='0')
+    creation_timestamp = attr.ib(default='0')
+    last_updated_timestamp = attr.ib(default='0')
     id = attr.ib(default='')
     priority = attr.ib(default='')
 
@@ -60,14 +62,12 @@ class Message():
     MessageBody = attr.ib()
     Priority = attr.ib()
     ReceiptHandle = attr.ib()
-    last_updated_timestamp = attr.ib(default=datetime.utcnow().isoformat()+'Z')
+    last_updated_timestamp = attr.ib(default='0')
     system_info = attr.ib(default={}, converter=ensure_cls(SystemInfo))
 
     def __attrs_post_init__(self):
         self.set_id(self.id)
         self.system_info.priority = self.Priority
-        time_priority = datetime.fromtimestamp(datetime.utcnow().timestamp()-86400*self.Priority)
-        self.system_info.last_updated_timestamp = time_priority.isoformat()+'Z'
 
     def set_id(self, id):
         self.id = id
@@ -182,36 +182,46 @@ class DynamoDbQueue():
         selectedID = None
         selectedVersion = 0
         recordForPeekIsFound = False
-        exclusiveStartKey = {}
+        exclusiveStartKey = None
         done = False
         receivedMessage = None
 
         while not done:
-            queryResult = self.table.query(
-                IndexName = 'queueud-last_updated_timestamp-index',
-                Limit=250,
-                ConsistentRead=False,
-                ScanIndexForward=True,
-                ProjectionExpression='id, queued, system_info',
-                KeyConditionExpression=Key('queued').eq(1),
-            )
-
-            log.info("peek did query.  result:", queryResult)
+            # Workaround issue with ExclusiveStartKey in boto3:  https://github.com/boto/botocore/issues/1688
+            if exclusiveStartKey == None:
+                queryResult = self.table.query(
+                    IndexName = 'queueud-last_updated_timestamp-index',
+                    Limit=2, # 250
+                    ConsistentRead=False,
+                    ScanIndexForward=True,
+                    ProjectionExpression='id, queued, system_info',
+                    KeyConditionExpression=Key('queued').eq(1),
+                )
+            else:
+                log.info(f"Executing query with ExclusiveStartKey {exclusiveStartKey}")
+                queryResult = self.table.query(
+                    IndexName = 'queueud-last_updated_timestamp-index',
+                    Limit=2, # 250
+                    ConsistentRead=False,
+                    ScanIndexForward=True,
+                    ProjectionExpression='id, queued, system_info',
+                    KeyConditionExpression=Key('queued').eq(1),
+                    ExclusiveStartKey=exclusiveStartKey
+                )        
 
             if 'LastEvaluatedKey' in queryResult:
                 exclusiveStartKey = queryResult['LastEvaluatedKey'] 
             else:
                 log.info('LastEvaluatedKey is not in queryResults')
+                exclusiveStartKey = None
 
             log.info(f"exclusiveStartKey is: {exclusiveStartKey}")
 
             for message in queryResult['Items']:
-                # log.info(f"Message from query id {message['system_info']['id']} v: {message['system_info']['version']}")
                 if 'queue_selected' in message['system_info'] and message['system_info']['queue_selected']:
                     currentTS = int(datetime.utcnow().timestamp())
                     lastPeekTimeUTC = int(message['system_info']['peek_utc_timestamp'])
                     diff = currentTS - lastPeekTimeUTC
-                    # log.info(f"queue_selected: message['system_info']['queue_selected'] currentTS: {currentTS} lastPeekTimeUTC: {lastPeekTimeUTC} diff {diff}")
 
                     if currentTS - lastPeekTimeUTC > self.config.VISIBILITY_TIMEOUT_IN_S:
                         selectedID = message['system_info']['id']
@@ -229,7 +239,7 @@ class DynamoDbQueue():
                     break
 			
             # We're done if we found a message to peek at, or no more pages of messages:
-            done = recordForPeekIsFound == True or exclusiveStartKey == {}
+            done = recordForPeekIsFound == True or exclusiveStartKey == None
 
         if selectedID == None:
             # Queue is empty
@@ -313,16 +323,22 @@ class DynamoDbQueue():
 
 class DynamoDbTableCreator():
 
-    @staticmethod
-    def tableExists(tableName):
+    def __init__(self, client):
+        self.dynamodb_client = client
+
+    def tableExists(self, tableName):
         try:
-            result = dynamodb_client.describe_table(TableName=tableName)
+            result = self.dynamodb_client.describe_table(TableName=tableName)
             return True
         except:
             return False
 
-    @staticmethod
-    def createTable(tableName):
+    def delayUntilTableExists(self, tableName):
+        while not self.tableExists(tableName):
+            log.info(f'Waiting for table {tableName}...')
+            sleep(2)
+        
+    def createTable(self, tableName):
         try:
             result = dynamodb_client.create_table(
                 TableName=tableName,
@@ -374,9 +390,6 @@ class DynamoDbTableCreator():
                 },
             )
             log.info(f"Creating table {tableName}...")
-            # Wait for aws to create the table
-            sleep(60)
-            log.info(f"Created table {tableName}", result)
         except Exception as e:
             log.error(f"Could not create DynamoDB table {tableName}", e)
         return result
@@ -385,20 +398,22 @@ class DynamoDbImpl():
 
     def __init__(self):
         self.dynamoDbQueues = {}
+        self.tableCreator = DynamoDbTableCreator(dynamodb_client)
 
     def create_queue(self, QueueName, QueueType='priority'):
-        # Create new Table (if necessary) to represent this queue
-        if not DynamoDbTableCreator.tableExists(QueueName):
-            log.info(f'Creating new table for queue {QueueName}')
-            DynamoDbTableCreator.createTable(QueueName)
         log.info(f'{QueueName}: Creating {QueueType} queue')
+        # Create new Table (if necessary) to represent this queue
+        if not self.tableCreator.tableExists(QueueName):
+            log.info(f'Creating new table for queue {QueueName}')
+            self.tableCreator.createTable(QueueName)
+            self.tableCreator.delayUntilTableExists(QueueName)
         self.dynamoDbQueues[QueueName] = DynamoDbQueue(QueueName)
         return True
 
     def open_queue(self, QueueName, QueueType='priority'):
         # See if Table exists for this queue
-        if not DynamoDbTableCreator.tableExists(QueueName):
-            raise Exception(f'DynamoDB table does not exist for queue {QueueName}')
+        if not self.tableCreator.tableExists(QueueName):
+            self.tableCreator.delayUntilTableExists(QueueName)
         log.info(f'{QueueName}: Opening {QueueType} queue')
         self.dynamoDbQueues[QueueName] = DynamoDbQueue(QueueName)
         return True

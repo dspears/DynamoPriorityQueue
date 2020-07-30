@@ -6,7 +6,7 @@ client = dqs.client()
 
 # Queue name
 # queueName='AWSBlog-shipment-demo'
-queueName = 'MyNewQueue2'
+queueName = 'MyNewQueue4'
 
 client.open_queue(
   QueueName = queueName,
