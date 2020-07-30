@@ -103,12 +103,9 @@ class DynamoDbQueue():
         return item
 
     def put(self, item):
-        log.info("put item:", item)
         response = self.table.put_item(
             Item=item
         )
-        log.info("put response is:", response)
-
 
     def updateStatus(self, id, newStatus):
         ''' Method for changing the status of the record 
@@ -134,10 +131,9 @@ class DynamoDbQueue():
         message = self.get(id)
         outcome = None
         if message:
-            log.info('enqueue found message: ', message)
             status = message['system_info']['status']  
             version = int(message['system_info']['version'])
-            log.info(f"version is: {version} of type {type(version).__name__}")
+            log.debug(f"version is: {version} of type {type(version).__name__}")
             if status != 'READY_TO_ENQUEUE':
                 raise Exception('Message to enqueue is in wrong state')
             now = datetime.utcnow().isoformat()+'Z'
@@ -167,7 +163,6 @@ class DynamoDbQueue():
                         ':pri': priority_timestamp
                     }
                 )
-                log.info('enqueue did update_item', outcome)
             # except ConditionalCheckFailedException as e:
             #     log.info('Enqueue update blocked by optimistic locking version number.')
             except Exception as e:
@@ -198,7 +193,7 @@ class DynamoDbQueue():
                     KeyConditionExpression=Key('queued').eq(1),
                 )
             else:
-                log.info(f"Executing query with ExclusiveStartKey {exclusiveStartKey}")
+                log.debug(f"Executing query with ExclusiveStartKey {exclusiveStartKey}")
                 queryResult = self.table.query(
                     IndexName = 'queueud-last_updated_timestamp-index',
                     Limit=2, # 250
@@ -212,10 +207,7 @@ class DynamoDbQueue():
             if 'LastEvaluatedKey' in queryResult:
                 exclusiveStartKey = queryResult['LastEvaluatedKey'] 
             else:
-                log.info('LastEvaluatedKey is not in queryResults')
                 exclusiveStartKey = None
-
-            log.info(f"exclusiveStartKey is: {exclusiveStartKey}")
 
             for message in queryResult['Items']:
                 if 'queue_selected' in message['system_info'] and message['system_info']['queue_selected']:
@@ -228,14 +220,14 @@ class DynamoDbQueue():
                         selectedVersion = message['system_info']['version']
                         # Converted straggler.
                         recordForPeekIsFound = True
-                        log.info(f"Converted straggler version: {selectedVersion}")
+                        log.debug(f"Converted straggler version: {selectedVersion}")
                         break
                 
                 else:
                     selectedID = message['system_info']['id']
                     selectedVersion = message['system_info']['version']
                     recordForPeekIsFound = True
-                    log.info(f"Selected message id: {selectedID} version: {selectedVersion}")
+                    log.debug(f"Selected message id: {selectedID} version: {selectedVersion}")
                     break
 			
             # We're done if we found a message to peek at, or no more pages of messages:
@@ -243,10 +235,10 @@ class DynamoDbQueue():
 
         if selectedID == None:
             # Queue is empty
-            log.info("Queue is empty")
+            log.debug("Queue is empty")
             return None
         
-        log.info(f"MESSAGE ID TO PEEK: {selectedID}.  SELECTED VERSION: {selectedVersion}")
+        log.debug(f"MESSAGE ID TO PEEK: {selectedID}.  SELECTED VERSION: {selectedVersion}")
 
         message = self.get(selectedID)
         id = message['id']
@@ -277,12 +269,11 @@ class DynamoDbQueue():
                     ":ts": tsUTC
                 }
             )
-            log.info('peek did update_item. outcome is:', outcome)
             receivedMessage = self.get(selectedID)
         # except ConditionalCheckFailedException as e:
         #     log.info('Peek blocked by optimistic locking version number.')
         except Exception as e:
-            log.info('Peek blocked by optimistic locking version number.')
+            log.debug('Peek blocked by optimistic locking version number.')
             receivedMessage = 'retry'
             # log.warning('Peek update failed.  Exception:', e)
         return receivedMessage
@@ -335,7 +326,7 @@ class DynamoDbTableCreator():
 
     def delayUntilTableExists(self, tableName):
         while not self.tableExists(tableName):
-            log.info(f'Waiting for table {tableName}...')
+            log.info(f'Waiting for queue {tableName}...')
             sleep(2)
         
     def createTable(self, tableName):
@@ -389,7 +380,7 @@ class DynamoDbTableCreator():
                     'WriteCapacityUnits': 100
                 },
             )
-            log.info(f"Creating table {tableName}...")
+            log.info(f"Creating queue {tableName}...")
         except Exception as e:
             log.error(f"Could not create DynamoDB table {tableName}", e)
         return result
@@ -433,7 +424,7 @@ class DynamoDbImpl():
         if QueueName in self.dynamoDbQueues:
             id = str(uuid4())
             msg = Message(id=id, MessageBody=MessageBody, Priority=Priority, ReceiptHandle=id)
-            log.info(f"Message being sent is: {attr.asdict(msg)}")
+            log.debug(f"Message being sent is: {attr.asdict(msg)}")
             self.dynamoDbQueues[QueueName].put(attr.asdict(msg))
             self.dynamoDbQueues[QueueName].enqueue(id)
         else:
@@ -442,7 +433,7 @@ class DynamoDbImpl():
 
     def receive_message(self, QueueName):
         # peek the message queue
-        log.info(f'{QueueName}: receiving messages via DynamoDB')
+        log.debug(f'{QueueName}: receiving messages via DynamoDB')
         result = []
         if QueueName in self.dynamoDbQueues:
             # TODO: Add support for receiving in batches
@@ -455,7 +446,7 @@ class DynamoDbImpl():
 
     def delete_message(self, QueueName, ReceiptHandle):
         # Do a dequeue / remove 
-        log.info(f'{QueueName}: deleting a message with ReceiptHandle {ReceiptHandle}')
+        log.debug(f'{QueueName}: deleting a message with ReceiptHandle {ReceiptHandle}')
         if QueueName in self.dynamoDbQueues:
             self.dynamoDbQueues[QueueName].remove(ReceiptHandle)
         return True

@@ -1,9 +1,26 @@
 version: '3.7'
 services:
+  producer:
+    build:
+      context: .
+      dockerfile: ./docker/development/python/producer/Dockerfile
+    tty: true
+    volumes:
+      - ./:/daupler
+    depends_on:
+      - "dynamodb-local"
+    links:
+      - "dynamodb-local"
+    environment:
+      - AWS_LOCAL=YES
+      - DYNAMODB_LOCAL_ENDPOINT=http://dynamodb-local:8000
+      - AWS_ACCESS_KEY_ID='DUMMYIDEXAMPLE'
+      - AWS_SECRET_ACCESS_KEY='DUMMYEXAMPLEKEY'
+
   worker-node:
     build:
       context: .
-      dockerfile: ./docker/development/python/Dockerfile
+      dockerfile: ./docker/development/python/consumer/Dockerfile
     volumes:
       - ./:/daupler
     depends_on:
@@ -16,6 +33,9 @@ services:
       - AWS_ACCESS_KEY_ID='DUMMYIDEXAMPLE'
       - AWS_SECRET_ACCESS_KEY='DUMMYEXAMPLEKEY'
       - REGION='eu-west-1'
+      - POLL_INTERVAL=4
+      - PROCESSING_TIME=0.110
+
   dynamodb-local:
     image: amazon/dynamodb-local:latest
     container_name: dynamodb-local

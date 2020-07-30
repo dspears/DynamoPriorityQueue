@@ -3,7 +3,20 @@ import json
 from time import sleep
 import logging
 import logconfig
+import os
 log = logging.getLogger(__name__)
+
+if 'POLL_INTERVAL' in os.environ:
+  poll_interval = float(os.environ['POLL_INTERVAL'])
+else:
+  poll_interval = 5
+
+if 'PROCESSING_TIME' in os.environ:
+  processing_time = float(os.environ['PROCESSING_TIME'])
+else:
+  processing_time = 0.100
+
+log.info(f'Consumer starting - poll interval: {poll_interval}s, processing time: {processing_time}s')
 
 # Create a client
 client = dqs.client()
@@ -19,23 +32,20 @@ client.open_queue(
 # Simple Consumer
 messageCount = 0
 while True:
-  log.info(f"Polling message queue...  Messages received so far: {messageCount}")
   response = client.receive_message(
     QueueName = queueName,
   )
-  log.info(f"Response from receive_message is {response}")
   if response == []:
-    log.info('Sleeping 5s')
-    sleep(5)
+    sleep(poll_interval)
   else:
-    messageCount += 1
-    log.info(f'Processing message {messageCount}...')
-    # simulate some message processing time
-    sleep(0.100)
     id = response[0]['id']
+    messageCount += 1
+    log.info(f"Messages received: {messageCount} id: {id}")
+    # simulate some message processing time
+    sleep(processing_time)
     receiptHandle = response[0]['ReceiptHandle']
-    log.info(f'NOT Deleteing message {id}')
-    # client.delete_message(
-    #   QueueName = queueName,
-    #   ReceiptHandle = receiptHandle
-    # )
+    client.delete_message(
+      QueueName = queueName,
+      ReceiptHandle = receiptHandle
+    )
+
