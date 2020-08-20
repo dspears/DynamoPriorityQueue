@@ -8,28 +8,28 @@ DEFAULT_PRIORITY = 100
 
 class DqsMock():
   def create_queue(self, QueueName, QueueType='priority'):
-    log.info(f'{QueueName}: Creating {QueueType} queue')
+    log.info('%s: Creating %s queue', QueueName, QueueType)
     return True
 
   def open_queue(self, QueueName):
-    log.info(f'{QueueName}: Opening queue')
+    log.info('%s: Opening queue', QueueName)
     return True
 
   def delete_queue(self, QueueName):
-    log.info(f'{QueueName}: Deleting queue')
+    log.info('%s: Deleting queue', QueueName)
     return True
 
   def send_message(self, QueueName, MessageBody, Priority=DEFAULT_PRIORITY):
-    log.info(f'{QueueName}: sending message with priority {Priority}')
-    log.info(f'{QueueName}: MessageBody: {MessageBody}')
+    log.info('%s: sending message with priority %s', QueueName, Priority)
+    log.info('%s: MessageBody: %s', QueueName, MessageBody)
     return '42'
 
   def receive_message(self, QueueName):
-    log.info(f'{QueueName}: receiving messages')
+    log.info('%s: receiving messages', QueueName)
     return []
 
   def delete_message(self, QueueName, ReceiptHandle):
-    log.info(f'{QueueName}: deleting a message with ReceiptHandle {ReceiptHandle}')
+    log.info('%s: deleting a message with ReceiptHandle %s', QueueName, ReceiptHandle)
     return True
 
 

@@ -3,6 +3,7 @@ from boto3.dynamodb.conditions import Key, Attr
 from datetime import datetime
 import dateutil.parser as dateparser
 import boto3
+from botocore import exceptions
 import attr
 import json
 import logging
@@ -16,7 +17,7 @@ DEFAULT_PRIORITY = 100
 
 if  'AWS_LOCAL' in os.environ:
     DYNAMODB_ENDPOINT = os.environ['DYNAMODB_LOCAL_ENDPOINT']
-    log.info(f"Using local endpoint {DYNAMODB_ENDPOINT}")
+    log.info("Using local endpoint %s", DYNAMODB_ENDPOINT)
     dynamodb = boto3.resource('dynamodb', endpoint_url=DYNAMODB_ENDPOINT, region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url=DYNAMODB_ENDPOINT, region_name='us-east-1')
 else:
@@ -133,7 +134,7 @@ class DynamoDbQueue():
         if message:
             status = message['system_info']['status']  
             version = int(message['system_info']['version'])
-            log.debug(f"version is: {version} of type {type(version).__name__}")
+            log.debug("version is: %s", version)
             if status != 'READY_TO_ENQUEUE':
                 raise Exception('Message to enqueue is in wrong state')
             now = datetime.utcnow().isoformat()+'Z'
@@ -163,10 +164,13 @@ class DynamoDbQueue():
                         ':pri': priority_timestamp
                     }
                 )
-            # except ConditionalCheckFailedException as e:
-            #     log.info('Enqueue update blocked by optimistic locking version number.')
+            except exceptions.ClientError as e:
+                if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                    log.info('Enqueue update blocked by optimistic locking version number.')
+                else:
+                    log.error('Enqueue update failed.  Exception: %s', e)
             except Exception as e:
-                log.error('Enqueue update failed.  Exception:', e)
+                log.error('Enqueue update failed.  Exception: %s', e)
         else:
             raise Exception(f"Unknown message id passed to enqueue: {id}")
 
@@ -193,7 +197,7 @@ class DynamoDbQueue():
                     KeyConditionExpression=Key('queued').eq(1),
                 )
             else:
-                log.debug(f"Executing query with ExclusiveStartKey {exclusiveStartKey}")
+                log.debug("Executing query with ExclusiveStartKey %s", exclusiveStartKey)
                 queryResult = self.table.query(
                     IndexName = 'queueud-last_updated_timestamp-index',
                     Limit=2, # 250
@@ -220,14 +224,14 @@ class DynamoDbQueue():
                         selectedVersion = message['system_info']['version']
                         # Converted straggler.
                         recordForPeekIsFound = True
-                        log.debug(f"Converted straggler version: {selectedVersion}")
+                        log.debug("Converted straggler version: %s", selectedVersion)
                         break
                 
                 else:
                     selectedID = message['system_info']['id']
                     selectedVersion = message['system_info']['version']
                     recordForPeekIsFound = True
-                    log.debug(f"Selected message id: {selectedID} version: {selectedVersion}")
+                    log.debug("Selected message id: %s version: %i", selectedID, selectedVersion)
                     break
 			
             # We're done if we found a message to peek at, or no more pages of messages:
@@ -238,7 +242,7 @@ class DynamoDbQueue():
             log.debug("Queue is empty")
             return None
         
-        log.debug(f"MESSAGE ID TO PEEK: {selectedID}.  SELECTED VERSION: {selectedVersion}")
+        log.debug("MESSAGE ID TO PEEK: %s.  SELECTED VERSION: %s", selectedID, selectedVersion)
 
         message = self.get(selectedID)
         id = message['id']
@@ -270,12 +274,16 @@ class DynamoDbQueue():
                 }
             )
             receivedMessage = self.get(selectedID)
-        # except ConditionalCheckFailedException as e:
-        #     log.info('Peek blocked by optimistic locking version number.')
-        except Exception as e:
-            log.debug('Peek blocked by optimistic locking version number.')
+        except exceptions.ClientError as e:
+            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                # This is an expected exception when multiple consumers are competing for messages.
+                log.info('Enqueue update blocked by optimistic locking version number.')
+            else:
+                log.warning('Enqueue update blocked by ClientError exception: %s', e)
             receivedMessage = 'retry'
-            # log.warning('Peek update failed.  Exception:', e)
+        except Exception as e:
+            log.warning('Peek blocked by Exception: %s', e)
+            receivedMessage = 'retry'
         return receivedMessage
 
 
@@ -326,7 +334,7 @@ class DynamoDbTableCreator():
 
     def delayUntilTableExists(self, tableName):
         while not self.tableExists(tableName):
-            log.info(f'Waiting for queue {tableName}...')
+            log.info('Waiting for queue %s', tableName)
             sleep(2)
         
     def createTable(self, tableName):
@@ -380,9 +388,9 @@ class DynamoDbTableCreator():
                     'WriteCapacityUnits': 100
                 },
             )
-            log.info(f"Creating queue {tableName}...")
+            log.info("Creating queue %s", tableName)
         except Exception as e:
-            log.error(f"Could not create DynamoDB table {tableName}", e)
+            log.error("Could not create DynamoDB table %s.  Exception: %s", tableName, e)
         return result
 
 class DynamoDbImpl():
@@ -392,26 +400,26 @@ class DynamoDbImpl():
         self.tableCreator = DynamoDbTableCreator(dynamodb_client)
 
     def create_queue(self, QueueName, QueueType='priority'):
-        log.info(f'{QueueName}: Creating {QueueType} queue')
+        log.info('%s: Creating %s queue', QueueName, QueueType)
         # Create new Table (if necessary) to represent this queue
         if not self.tableCreator.tableExists(QueueName):
-            log.info(f'Creating new table for queue {QueueName}')
+            log.info('Creating new table for queue %s', QueueName)
             self.tableCreator.createTable(QueueName)
             self.tableCreator.delayUntilTableExists(QueueName)
         self.dynamoDbQueues[QueueName] = DynamoDbQueue(QueueName)
         return True
 
-    def open_queue(self, QueueName, QueueType='priority'):
+    def open_queue(self, QueueName):
         # See if Table exists for this queue
         if not self.tableCreator.tableExists(QueueName):
             self.tableCreator.delayUntilTableExists(QueueName)
-        log.info(f'{QueueName}: Opening {QueueType} queue')
+        log.info('%s: Opening queue', QueueName)
         self.dynamoDbQueues[QueueName] = DynamoDbQueue(QueueName)
         return True
 
     def delete_queue(self, QueueName):
         # Delete Table associated with this queue
-        log.info(f'{QueueName}: Deleting queue')
+        log.info('%s: Deleting queue', QueueName)
         queue = DynamoDbQueue(QueueName)
         queue.deleteQueue()
         return True
@@ -419,12 +427,12 @@ class DynamoDbImpl():
     def send_message(self, QueueName, MessageBody, Priority=DEFAULT_PRIORITY):
         # Do a put, then enqueue
         id = None
-        log.info(f'{QueueName}: sending message with priority {Priority}')
-        log.info(f'{QueueName}: MessageBody: {MessageBody}')
+        log.info('%s: sending message with priority %i', QueueName, Priority)
+        log.info('%s: MessageBody: %s', QueueName, MessageBody)
         if QueueName in self.dynamoDbQueues:
             id = str(uuid4())
             msg = Message(id=id, MessageBody=MessageBody, Priority=Priority, ReceiptHandle=id)
-            log.debug(f"Message being sent is: {attr.asdict(msg)}")
+            log.debug("Message being sent is: %s", attr.asdict(msg))
             self.dynamoDbQueues[QueueName].put(attr.asdict(msg))
             self.dynamoDbQueues[QueueName].enqueue(id)
         else:
@@ -433,7 +441,7 @@ class DynamoDbImpl():
 
     def receive_message(self, QueueName):
         # peek the message queue
-        log.debug(f'{QueueName}: receiving messages via DynamoDB')
+        log.debug('%s: receiving messages via DynamoDB', QueueName)
         result = []
         if QueueName in self.dynamoDbQueues:
             # TODO: Add support for receiving in batches
@@ -446,7 +454,7 @@ class DynamoDbImpl():
 
     def delete_message(self, QueueName, ReceiptHandle):
         # Do a dequeue / remove 
-        log.debug(f'{QueueName}: deleting a message with ReceiptHandle {ReceiptHandle}')
+        log.debug('%s: deleting a message with ReceiptHandle %s', QueueName, ReceiptHandle)
         if QueueName in self.dynamoDbQueues:
             self.dynamoDbQueues[QueueName].remove(ReceiptHandle)
         return True

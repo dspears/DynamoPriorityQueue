@@ -1,4 +1,4 @@
-import dqs  # i.e. Daupler DynamoDB Queue Service
+import dqs 
 import json
 import logging
 import logconfig
